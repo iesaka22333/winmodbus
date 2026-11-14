@@ -76,4 +76,25 @@ pub fn build(b: *std.Build) void {
         // 5. 两个架构的文件名不同，直接安装到 zig-out/bin/ 即可，不会同名覆盖
         b.installArtifact(lib);
     }
+
+    // ========================================================================
+    // 实机测试步骤：zig build e2e
+    // 用 Zig 编写测试宿主，通过 Win32 LoadLibrary 加载 zig-out/bin/libmodbus-x64.dll，
+    // 在本机 TCP 回环（主站<->从站）与本机真实串口（默认 COM1）上跑完整功能测试。
+    // ========================================================================
+    const e2e_mod = b.createModule(.{
+        .root_source_file = b.path("tests/e2e_test.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    const e2e_exe = b.addExecutable(.{
+        .name = "e2e_test",
+        .root_module = e2e_mod,
+    });
+    const e2e_run = b.addRunArtifact(e2e_exe);
+    // 以项目根目录为工作目录，测试程序用相对路径加载 DLL
+    e2e_run.setCwd(b.path("."));
+    e2e_run.step.dependOn(b.getInstallStep());
+    const e2e_step = b.step("e2e", "Run real-device E2E tests against zig-out/bin/libmodbus-x64.dll");
+    e2e_step.dependOn(&e2e_run.step);
 }

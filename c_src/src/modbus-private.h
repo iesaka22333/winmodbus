@@ -41,6 +41,18 @@ MODBUS_BEGIN_DECLS
 #define _RESPONSE_TIMEOUT 500000
 #define _BYTE_TIMEOUT     500000
 
+/* Winsock socket handles are kernel handle values and have no relation to
+ * FD_SETSIZE (which only bounds how many sockets fit into an fd_set, not their
+ * values). Applying the POSIX value-range check on Windows would reject every
+ * socket, so the check is neutralized there. */
+#ifdef _WIN32
+# define MODBUS_SOCKET_IS_INVALID(s)        ((s) == -1)
+# define MODBUS_SOCKET_EXCEEDS_FD_SETSIZE(s) (0)
+#else
+# define MODBUS_SOCKET_IS_INVALID(s)        ((s) < 0)
+# define MODBUS_SOCKET_EXCEEDS_FD_SETSIZE(s) ((s) >= FD_SETSIZE)
+#endif
+
 typedef enum {
     _MODBUS_BACKEND_TYPE_RTU = 0,
     _MODBUS_BACKEND_TYPE_TCP

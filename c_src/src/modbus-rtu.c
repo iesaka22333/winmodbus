@@ -1240,7 +1240,7 @@ _modbus_rtu_select(modbus_t *ctx, fd_set *rset, struct timeval *tv, int length_t
             }
             /* Necessary after an error */
             FD_ZERO(rset);
-            if (ctx->s < 0 || ctx->s >= FD_SETSIZE) {
+            if (MODBUS_SOCKET_IS_INVALID(ctx->s) || MODBUS_SOCKET_EXCEEDS_FD_SETSIZE(ctx->s)) {
                 errno = EINVAL;
                 return -1;
             }

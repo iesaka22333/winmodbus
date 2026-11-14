@@ -1,6 +1,26 @@
+# Zig 构建缓存
 .zig-cache/
 zig-cache/
+
+# 编辑器
 .vscode/
+
+# 编译中间产物与各类二进制文件（仅 zig-out/bin 下的 .dll 交付物入库，
+# 其余如 .exe/.lib/.pdb/.obj 等一律不入库）
 *.o
 *.obj
+*.lib
+*.a
+*.lo
+*.la
+*.exe
 *.pdb
+*.so
+*.dylib
+*.dll.a
+
+# zig-out：先整体忽略，再逐级放行 bin 目录下的 DLL
+/zig-out/*
+!/zig-out/bin/
+/zig-out/bin/*
+!/zig-out/bin/*.dll

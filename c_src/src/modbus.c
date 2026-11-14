@@ -408,7 +408,7 @@ int _modbus_receive_msg(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type)
      * descriptor to validate and put into the fd_set. */
     if (ctx->backend->backend_type != _MODBUS_BACKEND_TYPE_RTU) {
 #endif
-        if (ctx->s < 0 || ctx->s >= FD_SETSIZE) {
+        if (MODBUS_SOCKET_IS_INVALID(ctx->s) || MODBUS_SOCKET_EXCEEDS_FD_SETSIZE(ctx->s)) {
             if (ctx->debug) {
                 fprintf(stderr, "ERROR Invalid socket descriptor %d\n", ctx->s);
             }
