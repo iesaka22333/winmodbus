@@ -20,6 +20,7 @@ extern "kernel32" fn LoadLibraryA(lpLibFileName: [*:0]const u8) callconv(.winapi
 extern "kernel32" fn GetProcAddress(hModule: *anyopaque, lpProcName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
 extern "kernel32" fn FreeLibrary(hModule: *anyopaque) callconv(.winapi) c_int;
 extern "kernel32" fn GetLastError() callconv(.winapi) u32;
+extern "kernel32" fn GetModuleFileNameA(hModule: ?*anyopaque, lpFilename: [*]u8, nSize: u32) callconv(.winapi) u32;
 
 /// 极简动态库封装（Zig 0.17 的 std.DynLib 不再支持 Windows，直接用 Win32 API）
 const Lib = struct {
@@ -39,6 +40,58 @@ const Lib = struct {
         return @ptrCast(p);
     }
 };
+
+const LoadedDll = struct {
+    lib: Lib,
+    path: [:0]const u8,
+};
+
+var g_dll_path: [512:0]u8 = undefined;
+
+/// 取当前 exe 所在目录（不含末尾分隔符）
+fn exeDir(buf: []u8) ?[]const u8 {
+    const n = GetModuleFileNameA(null, buf.ptr, @intCast(buf.len));
+    if (n == 0 or n >= buf.len) return null;
+    const p = buf[0..n];
+    var i = p.len;
+    while (i > 0) : (i -= 1) {
+        if (p[i - 1] == '\\' or p[i - 1] == '/') return p[0 .. i - 1];
+    }
+    return null;
+}
+
+fn keepPath(p: []const u8) [:0]const u8 {
+    const len = @min(p.len, g_dll_path.len - 1);
+    @memcpy(g_dll_path[0..len], p[0..len]);
+    g_dll_path[len] = 0;
+    return g_dll_path[0..len :0];
+}
+
+/// 按优先级自动查找 DLL，避免把工作目录写死：
+///   1. exe 同目录（把 e2e_test.exe 和 DLL 放一起即可直接双击运行）
+///   2. 裸文件名（Windows 加载器会依次搜索 exe 目录、系统目录、PATH、当前目录）
+///   3. 仓库根目录相对路径（`zig build e2e` 的工作目录）
+///   4. 从 zig-out/bin 里运行时的 `..\..\zig-out\bin\...`
+fn loadDllAuto() ?LoadedDll {
+    var exe_dir_buf: [512]u8 = undefined;
+    var tmp: [512:0]u8 = undefined;
+
+    if (exeDir(&exe_dir_buf)) |d| {
+        if (std.mem.printSentinel(&tmp, "{s}\\libmodbus-x64.dll", .{d}, 0) catch null) |p| {
+            if (Lib.open(p)) |lib| return .{ .lib = lib, .path = keepPath(p) };
+        }
+    }
+
+    const fallbacks = [_][:0]const u8{
+        "libmodbus-x64.dll",
+        "zig-out/bin/libmodbus-x64.dll",
+        "..\\..\\zig-out\\bin\\libmodbus-x64.dll",
+    };
+    for (fallbacks) |p| {
+        if (Lib.open(p)) |lib| return .{ .lib = lib, .path = keepPath(p) };
+    }
+    return null;
+}
 
 fn sleepMs(ms: u32) void {
     Sleep(ms);
@@ -659,33 +712,52 @@ fn rtuSuite(api: *const Api, com: [:0]const u8) void {
 // ---------------------------------------------------------------------------
 fn archSuite() void {
     section("Architecture isolation");
-    if (Lib.open("zig-out/bin/libmodbus-x86.dll")) |lib| {
-        var l = lib;
-        l.close();
-        std.debug.print("  [INFO] 32-bit DLL loaded inside 64-bit process (unexpected)\n", .{});
-        g_skip += 1;
+    // 与主 DLL 一样不写死工作目录：依次尝试裸文件名（加载器先搜 exe 目录）、
+    // 仓库根相对路径、从 zig-out/bin 运行时的相对路径
+    const candidates = [_][:0]const u8{
+        "libmodbus-x86.dll",
+        "zig-out/bin/libmodbus-x86.dll",
+        "..\\..\\zig-out\\bin\\libmodbus-x86.dll",
+    };
+    var saw_missing = false;
+    for (candidates) |p| {
+        if (Lib.open(p)) |lib| {
+            var l = lib;
+            l.close();
+            std.debug.print("  [INFO] 32-bit DLL loaded inside 64-bit process (unexpected): {s}\n", .{p});
+            g_skip += 1;
+            return;
+        }
+        const err = GetLastError();
+        if (err == 193) { // ERROR_BAD_EXE_FORMAT：架构不匹配，符合预期
+            info("x64 process rejects 32-bit DLL (ERROR_BAD_EXE_FORMAT): {s}", .{p});
+            g_pass += 1;
+            return;
+        }
+        if (err == 126) saw_missing = true; // ERROR_MOD_NOT_FOUND
+    }
+    if (saw_missing) {
+        skip("libmodbus-x86.dll not found next to exe or in zig-out/bin", .{});
     } else {
-        info("loading x86 DLL in x64 process rejected by loader (expected, err=193)", .{});
-        g_pass += 1;
+        skip("x86 DLL architecture check inconclusive", .{});
     }
 }
 
 // ---------------------------------------------------------------------------
 pub fn main() !void {
-    // Zig 0.17 的进程参数改走 Io 接口，测试宿主直接固定路径，避免版本差异
-    const dll_path: [:0]const u8 = "zig-out/bin/libmodbus-x64.dll";
     const com: [:0]const u8 = "COM1";
 
     std.debug.print("winmodbus real-device test harness\n", .{});
     info("zig {s}, builtin arch={s}, os={s}", .{ @import("builtin").zig_version_string, @tagName(@import("builtin").cpu.arch), @tagName(@import("builtin").os.tag) });
-    info("DLL: {s}", .{dll_path});
 
     section("Export table check");
-    var lib = Lib.open(dll_path) orelse {
-        std.debug.print("  [FAIL] cannot load DLL ({s}), GetLastError={}\n", .{ dll_path, GetLastError() });
+    const loaded = loadDllAuto() orelse {
+        std.debug.print("  [FAIL] cannot load libmodbus-x64.dll (searched exe dir, cwd, zig-out/bin), GetLastError={}\n", .{GetLastError()});
         std.process.exit(2);
     };
+    var lib = loaded.lib;
     defer lib.close();
+    info("DLL: {s}", .{loaded.path});
 
     var missing: u32 = 0;
     for (export_names) |name| {
