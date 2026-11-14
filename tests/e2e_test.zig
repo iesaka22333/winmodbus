@@ -210,6 +210,15 @@ const Api = struct {
     mb_get_int32_cdab: *const fn ([*]const u16) callconv(.c) i32,
     mb_set_int32_abcd: *const fn (i32, [*]u16) callconv(.c) void,
     mb_set_int32_cdab: *const fn (i32, [*]u16) callconv(.c) void,
+
+    // 原始寄存器取用（兼容老项目）
+    mb_get_reg_u16: *const fn ([*]const u16, c_int) callconv(.c) u16,
+    mb_get_reg_i16: *const fn ([*]const u16, c_int) callconv(.c) i16,
+    mb_put_reg_u16: *const fn (u16, [*]u16, c_int) callconv(.c) void,
+    mb_get_reg_u32_abcd: *const fn ([*]const u16, c_int) callconv(.c) u32,
+    mb_get_reg_u32_cdab: *const fn ([*]const u16, c_int) callconv(.c) u32,
+    mb_get_reg_i32_abcd: *const fn ([*]const u16, c_int) callconv(.c) i32,
+    mb_get_reg_i32_cdab: *const fn ([*]const u16, c_int) callconv(.c) i32,
 };
 
 /// 设备手册中承诺导出的全部符号（用于导出表完整性校验）
@@ -233,7 +242,9 @@ const export_names = [_][:0]const u8{
     "mb_set_float_abcd",              "mb_set_float_cdab",            "mb_set_float_badc",
     "mb_set_float_dcba",              "mb_get_int32_abcd",            "mb_get_int32_cdab",
     "mb_set_int32_abcd",              "mb_set_int32_cdab",            "mb_rtu_set_serial_mode",
-    "mb_rtu_set_rts",                 "mb_rtu_set_rts_delay",
+    "mb_rtu_set_rts",                 "mb_rtu_set_rts_delay",         "mb_get_reg_u16",
+    "mb_get_reg_i16",                 "mb_put_reg_u16",               "mb_get_reg_u32_abcd",
+    "mb_get_reg_u32_cdab",            "mb_get_reg_i32_abcd",          "mb_get_reg_i32_cdab",
 };
 
 fn sym(comptime T: type, lib: *const Lib, comptime name: [:0]const u8) T {
@@ -298,6 +309,13 @@ fn loadApi(lib: *const Lib) Api {
         .mb_get_int32_cdab = sym(@TypeOf(@as(Api, undefined).mb_get_int32_cdab), lib, "mb_get_int32_cdab"),
         .mb_set_int32_abcd = sym(@TypeOf(@as(Api, undefined).mb_set_int32_abcd), lib, "mb_set_int32_abcd"),
         .mb_set_int32_cdab = sym(@TypeOf(@as(Api, undefined).mb_set_int32_cdab), lib, "mb_set_int32_cdab"),
+        .mb_get_reg_u16 = sym(@TypeOf(@as(Api, undefined).mb_get_reg_u16), lib, "mb_get_reg_u16"),
+        .mb_get_reg_i16 = sym(@TypeOf(@as(Api, undefined).mb_get_reg_i16), lib, "mb_get_reg_i16"),
+        .mb_put_reg_u16 = sym(@TypeOf(@as(Api, undefined).mb_put_reg_u16), lib, "mb_put_reg_u16"),
+        .mb_get_reg_u32_abcd = sym(@TypeOf(@as(Api, undefined).mb_get_reg_u32_abcd), lib, "mb_get_reg_u32_abcd"),
+        .mb_get_reg_u32_cdab = sym(@TypeOf(@as(Api, undefined).mb_get_reg_u32_cdab), lib, "mb_get_reg_u32_cdab"),
+        .mb_get_reg_i32_abcd = sym(@TypeOf(@as(Api, undefined).mb_get_reg_i32_abcd), lib, "mb_get_reg_i32_abcd"),
+        .mb_get_reg_i32_cdab = sym(@TypeOf(@as(Api, undefined).mb_get_reg_i32_cdab), lib, "mb_get_reg_i32_cdab"),
     };
 }
 
@@ -524,6 +542,51 @@ fn tcpSuite(api: *const Api) void {
     eqi("T20e int32 abcd round-trip", api.mb_get_int32_abcd(&pair), -123456789);
     api.mb_set_int32_cdab(-123456789, &pair);
     eqi("T20f int32 cdab round-trip", api.mb_get_int32_cdab(&pair), -123456789);
+
+    // ---- 原始寄存器取用函数（兼容老项目） ----
+    // 构造有符号负温度 -12.5℃ ×10 = -125 → 0xFF83；湿度 654 = 65.4%
+    var raw = [8]u16{ 0xFF83, 654, 0x0001, 0x86A0, 0x1234, 0x5678, 0xFFFF, 0x0000 };
+    eqi("T25a mb_get_reg_u16 raw value", api.mb_get_reg_u16(&raw, 1), 654);
+    eqi("T25b mb_get_reg_u16 sees signed bits as unsigned", api.mb_get_reg_u16(&raw, 0), 0xFF83);
+    eqi("T25c mb_get_reg_i16 decodes negative", api.mb_get_reg_i16(&raw, 0), -125);
+    eqi("T25d mb_get_reg_i16 positive unchanged", api.mb_get_reg_i16(&raw, 1), 654);
+
+    // -12.5℃ 还原：raw × 0.1
+    const temp = @as(f64, @floatFromInt(api.mb_get_reg_i16(&raw, 0))) / 10.0;
+    ok(@abs(temp + 12.5) < 1e-9, "T25e temperature scaling -125 -> -12.5");
+
+    eqi("T26a mb_get_reg_u32_abcd hi-lo order", api.mb_get_reg_u32_abcd(&raw, 2), 0x000186A0);
+    // raw[6..8] = 0xFFFF,0x0000 → ABCD 组合 = 0xFFFF0000 = -65536；CDAB 组合 = 0x0000FFFF = 65535
+    eqi("T26b mb_get_reg_i32_abcd signed", api.mb_get_reg_i32_abcd(&raw, 6), -65536);
+    eqi("T26c mb_get_reg_u32_cdab swaps words", api.mb_get_reg_u32_cdab(&raw, 2), 0x86A00001);
+    eqi("T26d mb_get_reg_i32_cdab on 0xFFFF,0x0000", api.mb_get_reg_i32_cdab(&raw, 6), 65535);
+
+    // 下标偏移读取（等价于切片）
+    eqi("T27a index offset from middle", api.mb_get_reg_u16(&raw, 4), 0x1234);
+    eqi("T27b u32 from offset index", api.mb_get_reg_u32_abcd(&raw, 4), 0x12345678);
+
+    // 写入
+    var wbuf = [4]u16{ 0, 0, 0, 0 };
+    api.mb_put_reg_u16(0xABCD, &wbuf, 0);
+    api.mb_put_reg_u16(0x1234, &wbuf, 3);
+    ok(wbuf[0] == 0xABCD and wbuf[1] == 0 and wbuf[2] == 0 and wbuf[3] == 0x1234, "T28 mb_put_reg_u16 writes at index");
+
+    // 负下标防御（返回 0 / 不写入，不崩溃）
+    eqi("T29a negative index u16 returns 0", api.mb_get_reg_u16(&raw, -1), 0);
+    eqi("T29b negative index i16 returns 0", api.mb_get_reg_i16(&raw, -1), 0);
+    eqi("T29c negative index u32 returns 0", api.mb_get_reg_u32_abcd(&raw, -5), 0);
+    var guard = [2]u16{ 0x1111, 0x2222 };
+    api.mb_put_reg_u16(0x9999, &guard, -1);
+    ok(guard[0] == 0x1111 and guard[1] == 0x2222, "T29d negative index put is no-op");
+
+    // 与 32 位转换函数一致性交叉验证
+    var cross = [2]u16{ 0, 0 };
+    api.mb_set_int32_abcd(-123456789, &cross);
+    eqi("T30a reg_u32_abcd matches set_int32_abcd", api.mb_get_reg_u32_abcd(&cross, 0), @as(u32, @bitCast(@as(i32, -123456789))));
+    api.mb_set_int32_cdab(-123456789, &cross);
+    eqi("T30b reg_i32_cdab matches set_int32_cdab", api.mb_get_reg_i32_cdab(&cross, 0), -123456789);
+    api.mb_set_float_cdab(3.5, &cross);
+    ok(@abs(api.mb_get_float_cdab(&cross) - 3.5) < 1e-6, "T30c float unchanged by raw helpers");
 
     // 连续 200 次读，测吞吐与时延
     var seq_ok: u32 = 0;

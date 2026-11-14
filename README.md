@@ -11,7 +11,7 @@
 - 主站（Master）：主动读写传感器、变送器、PLC 等从站设备。
 - 从站（Slave）：在本机内存中模拟一台 Modbus 设备，响应上位机的读写请求。
 
-本库覆盖的功能码：0x01、0x02、0x03、0x04、0x05、0x06、0x0F、0x10、0x11、0x16、0x17，并提供非标准原始报文收发接口，以及浮点数、32 位整数与寄存器之间的转换工具。
+本库覆盖的功能码：0x01、0x02、0x03、0x04、0x05、0x06、0x0F、0x10、0x11、0x16、0x17，并提供非标准原始报文收发接口，以及浮点数、32 位整数与寄存器之间的转换工具。此外还提供一组**原始寄存器取用函数**（`mb_get_reg_u16` / `mb_get_reg_i16` 等，见第 5.1 节），可直接按下标取 16 位原值，便于兼容只做简单缩放换算的老项目。当前 DLL 共计导出 66 个函数。
 
 ### 1.2 内部加固机制
 
@@ -53,12 +53,12 @@ zig build e2e
 
 该步骤会编译并运行 `e2e_test`，其内容为：
 
-1. 用 Win32 `LoadLibrary` 加载真实的 `zig-out/bin/libmodbus-x64.dll`，校验文档中承诺的 59 个导出符号；
-2. 在本机 TCP 回环上运行「从站监听 + 主站连接」，覆盖 01/02/03/04/05/06/0F/10/11/16/17 全部功能码、异常应答（errno = `MODBUS_ENOBASE` + 异常码）、读写个数上限、浮点/32 位整数四种字节序转换、4 线程并发、断线自动重连；
+1. 用 Win32 `LoadLibrary` 加载真实的 `zig-out/bin/libmodbus-x64.dll`，校验文档中承诺的 66 个导出符号；
+2. 在本机 TCP 回环上运行「从站监听 + 主站连接」，覆盖 01/02/03/04/05/06/0F/10/11/16/17 全部功能码、异常应答（errno = `MODBUS_ENOBASE` + 异常码）、读写个数上限、浮点/32 位整数四种字节序转换、原始寄存器取用函数（含负温度 `int16` 解释、下标偏移、负下标防御）、4 线程并发、断线自动重连；
 3. 对本机真实串口（默认 COM1）验证端口打开、200 ms 默认超时、`mb_set_timeout_ms` 生效、站号边界、`COM12` 高编号补全与大小写兼容、不存在的端口返回 -1；
 4. 验证 32 位 DLL 无法在 64 位进程中加载（架构隔离）。
 
-全部检查通过时进程返回 0，任一失败返回 1，可直接用于 CI 或交付前自检。
+全部检查通过时进程返回 0，任一失败返回 1，可直接用于 CI 或交付前自检。当前共 94 项检查，全部通过。
 
 ## 2. 通用约定
 
@@ -171,6 +171,56 @@ zig build e2e
 | `mb_set_int32_cdab` | 32 位整数拆成 2 个寄存器（CDAB） | 同上 | 无 |
 
 注意：整数转换函数仅提供 `abcd` 与 `cdab` 两种字节序。
+
+### 5.1 原始寄存器取用函数（兼容老项目）
+
+上面的转换函数都把寄存器「解释」成某种业务类型。已有的老项目往往只需要**拿到 16 位原始值**自己再做换算（例如 `值 = 原始值 × 0.1`），或者只想按下标取寄存器而不愿手工写 `r[i]`。为此提供下面这组**零解释**的取用函数：它们不涉及浮点、不做字节序转换、也不校验数组长度，语义与 C 语言的 `src[index]` 完全一致。
+
+| 函数 | 作用 | 参数 | 返回值 |
+| :-- | :-- | :-- | :-- |
+| `mb_get_reg_u16` | 按下标取单个寄存器的**无符号**原值 | `src`：`Word` 数组首地址；`index`：下标（从 0 起） | `Word`（0~65535） |
+| `mb_get_reg_i16` | 按下标取单个寄存器的**有符号**原值（负温度等场景） | 同上 | `SmallInt`（-32768~32767） |
+| `mb_put_reg_u16` | 把单个值写入寄存器数组的指定下标 | `value`：要写入的值；`dest`：数组首地址；`index`：下标 | 无 |
+| `mb_get_reg_u32_abcd` | 从 `index` 起组合 2 个相邻寄存器为**无符号** 32 位（高字在低地址） | `src`：数组首地址；`index`：起始下标 | `Cardinal` |
+| `mb_get_reg_u32_cdab` | 同上，但**低字在低地址**（字交换） | 同上 | `Cardinal` |
+| `mb_get_reg_i32_abcd` | 同上，返回**有符号** 32 位 | 同上 | `Integer` |
+| `mb_get_reg_i32_cdab` | 同上，字交换且有符号 | 同上 | `Integer` |
+
+使用要点：
+
+1. `index` 为负数时，`get` 类函数返回 0，`put` 类函数不写入，不会崩溃；`index` 超出数组范围**不做检查**，与 C 语义一致，由调用方保证。
+2. 组合 32 位时，`index` 位置的寄存器与 `index + 1` 必须都在有效范围内。
+3. 这组函数与第 5 节其余函数**互不影响**，可以和 `mb_get_float_*` 混用。
+
+典型用法（一次读 4 个寄存器，混合解析）：
+
+```delphi
+var
+  R: array[0..3] of Word;
+  TempRaw: SmallInt;
+  HumiRaw: Word;
+  Total: Cardinal;
+begin
+  if mb_read_registers(h, 0, 4, @R) = 4 then
+  begin
+    TempRaw := mb_get_reg_i16(@R, 0);          // -125 表示 -12.5℃
+    HumiRaw := mb_get_reg_u16(@R, 1);          // 654 表示 65.4%RH
+    Total   := mb_get_reg_u32_abcd(@R, 2);     // 累计量 32 位
+    Writeln(Format('温度=%.1f 湿度=%.1f 累计=%d',
+      [TempRaw / 10.0, HumiRaw / 10.0, Total]));
+  end;
+end;
+```
+
+单寄存器设备（最常见的老传感器）就是：
+
+```delphi
+var R: Word;
+if mb_read_registers(h, 0, 1, @R) = 1 then
+  Value := mb_get_reg_i16(@R, 0) / 10.0;   // 有符号；若无符号改用 mb_get_reg_u16
+```
+
+> 提示：负值读成 `60000+` 说明漏了符号解释，改用 `mb_get_reg_i16` 即可。
 
 ## 6. 从站（Slave）模拟设备函数
 
@@ -336,6 +386,15 @@ function mb_get_int32_abcd(src: PWord): Integer; cdecl; external MODBUS_DLL;
 procedure mb_set_int32_abcd(val: Integer; dest: PWord); cdecl; external MODBUS_DLL;
 function mb_get_int32_cdab(src: PWord): Integer; cdecl; external MODBUS_DLL;
 procedure mb_set_int32_cdab(val: Integer; dest: PWord); cdecl; external MODBUS_DLL;
+
+{ ---- 原始寄存器取用（兼容老项目，见第 5.1 节）---- }
+function mb_get_reg_u16(src: PWord; index: Integer): Word; cdecl; external MODBUS_DLL;
+function mb_get_reg_i16(src: PWord; index: Integer): SmallInt; cdecl; external MODBUS_DLL;
+procedure mb_put_reg_u16(value: Word; dest: PWord; index: Integer); cdecl; external MODBUS_DLL;
+function mb_get_reg_u32_abcd(src: PWord; index: Integer): Cardinal; cdecl; external MODBUS_DLL;
+function mb_get_reg_u32_cdab(src: PWord; index: Integer): Cardinal; cdecl; external MODBUS_DLL;
+function mb_get_reg_i32_abcd(src: PWord; index: Integer): Integer; cdecl; external MODBUS_DLL;
+function mb_get_reg_i32_cdab(src: PWord; index: Integer): Integer; cdecl; external MODBUS_DLL;
 
 implementation
 

@@ -622,3 +622,63 @@ export fn mb_set_int32_cdab(val: i32, dest: [*]u16) void {
     dest[0] = @intCast(u & 0xFFFF);
     dest[1] = @intCast((u >> 16) & 0xFFFF);
 }
+
+// ============================================================================
+// 七、 原始寄存器取用函数（兼容老项目：不做任何字节序/浮点解释）
+// ----------------------------------------------------------------------------
+// 这些函数只做「按下标取一个 16 位寄存器的原值」或「按下标组合两个相邻
+// 16 位寄存器」，不涉及浮点解释，也不校验下标之外的内容。典型用法：
+//     var r: [4]u16 = undefined;
+//     if (mb_read_registers(h, 0, 4, &r) == 4) {
+//         const temp_raw = mb_get_reg_i16(&r, 0);   // 有符号 16 位原值
+//         const humi_raw = mb_get_reg_u16(&r, 1);   // 无符号 16 位原值
+//         const total_lo = mb_get_reg_u16(&r, 2);
+//     }
+// index 越界不做检查（与 C 端语义一致），由调用方保证 index 在数组范围内。
+// ============================================================================
+
+/// 取单个 16 位寄存器原值（无符号），index 为数组下标（从 0 起）
+export fn mb_get_reg_u16(src: [*]const u16, index: c_int) u16 {
+    if (index < 0) return 0;
+    return src[@intCast(index)];
+}
+
+/// 取单个 16 位寄存器原值（有符号 int16），用于负温度等场景
+export fn mb_get_reg_i16(src: [*]const u16, index: c_int) i16 {
+    if (index < 0) return 0;
+    return @bitCast(src[@intCast(index)]);
+}
+
+/// 把单个 16 位值写入寄存器数组指定下标
+export fn mb_put_reg_u16(value: u16, dest: [*]u16, index: c_int) void {
+    if (index < 0) return;
+    dest[@intCast(index)] = value;
+}
+
+/// 从左索引起始的两个相邻寄存器组合成无符号 32 位（高字在低地址，ABCD 语义）
+export fn mb_get_reg_u32_abcd(src: [*]const u16, index: c_int) u32 {
+    if (index < 0) return 0;
+    const i: usize = @intCast(index);
+    const hi: u32 = src[i];
+    const lo: u32 = src[i + 1];
+    return (hi << 16) | lo;
+}
+
+/// 从左索引起始的两个相邻寄存器组合成有符号 32 位（高字在低地址）
+export fn mb_get_reg_i32_abcd(src: [*]const u16, index: c_int) i32 {
+    return @bitCast(mb_get_reg_u32_abcd(src, index));
+}
+
+/// 从左索引起始的两个相邻寄存器组合成无符号 32 位（低字在低地址，CDAB 语义）
+export fn mb_get_reg_u32_cdab(src: [*]const u16, index: c_int) u32 {
+    if (index < 0) return 0;
+    const i: usize = @intCast(index);
+    const lo: u32 = src[i];
+    const hi: u32 = src[i + 1];
+    return (hi << 16) | lo;
+}
+
+/// 从左索引起始的两个相邻寄存器组合成有符号 32 位（低字在低地址）
+export fn mb_get_reg_i32_cdab(src: [*]const u16, index: c_int) i32 {
+    return @bitCast(mb_get_reg_u32_cdab(src, index));
+}
