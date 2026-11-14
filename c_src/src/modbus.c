@@ -217,7 +217,17 @@ static int send_msg(modbus_t *ctx, uint8_t *msg, int msg_length)
 #endif
             }
         }
-    } while ((ctx->error_recovery & MODBUS_ERROR_RECOVERY_LINK) && rc == -1);
+    } while ((ctx->error_recovery & MODBUS_ERROR_RECOVERY_LINK) && rc == -1
+#ifdef _WIN32
+             /* The Windows RTU backend writes to a serial HANDLE, so send
+              * failures never produce the Winsock codes that trigger the
+              * reconnect branch above. Retrying would re-issue the same failing
+              * WriteFile() forever (e.g. after an unplugged USB adapter or
+              * mb_close()), so fail the call instead. Link recovery remains
+              * active for TCP. */
+             && ctx->backend->backend_type != _MODBUS_BACKEND_TYPE_RTU
+#endif
+    );
 
     if (rc > 0 && rc != msg_length) {
         errno = EMBBADDATA;
@@ -392,14 +402,23 @@ int _modbus_receive_msg(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type)
 
     /* Add a file descriptor to the set */
     FD_ZERO(&rset);
-    if (ctx->s < 0 || ctx->s >= FD_SETSIZE) {
-        if (ctx->debug) {
-            fprintf(stderr, "ERROR Invalid socket descriptor %d\n", ctx->s);
+#ifdef _WIN32
+    /* The Windows RTU backend waits on the serial HANDLE kept in w_ser.fd, so
+     * ctx->s is not a socket and stays -1. Only TCP backends have a socket
+     * descriptor to validate and put into the fd_set. */
+    if (ctx->backend->backend_type != _MODBUS_BACKEND_TYPE_RTU) {
+#endif
+        if (ctx->s < 0 || ctx->s >= FD_SETSIZE) {
+            if (ctx->debug) {
+                fprintf(stderr, "ERROR Invalid socket descriptor %d\n", ctx->s);
+            }
+            errno = EINVAL;
+            return -1;
         }
-        errno = EINVAL;
-        return -1;
+        FD_SET(ctx->s, &rset);
+#ifdef _WIN32
     }
-    FD_SET(ctx->s, &rset);
+#endif
 
     /* We need to analyse the message step by step.  At the first step, we want
      * to reach the function code because all packets contain this

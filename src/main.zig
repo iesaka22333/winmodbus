@@ -45,6 +45,14 @@ pub const ModbusHandle = struct {
     is_closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
+/// 原子地取走并关闭 TCP 从站监听 socket，避免并发重复关闭同一句柄
+fn closeListenSocket(handle: *ModbusHandle) void {
+    const sock = @atomicRmw(c_int, &handle.tcp_listen_sock, .Xchg, -1, .acq_rel);
+    if (sock != -1) {
+        _ = c.closesocket(@bitCast(@as(isize, sock)));
+    }
+}
+
 /// 内部辅助：为新创建的上下文应用井下工业级默认参数
 fn applyIndustrialDefaults(ctx: *c.modbus_t) void {
     // 1. 默认响应超时设为 200ms，防止单台从机掉线卡死轮询线程
@@ -111,6 +119,8 @@ export fn mb_close(h: ?*ModbusHandle) void {
     handle.is_closing.store(true, .release);
     // 先关闭底层串口/Socket以打断可能正在阻塞的 modbus_receive
     c.modbus_close(handle.ctx);
+    // TCP 从站的监听 socket 独立于会话 socket，同样关闭以打断阻塞的 accept 并释放端口
+    closeListenSocket(handle);
     handle.mutex.lock();
     defer handle.mutex.unlock();
     handle.is_closing.store(false, .release);
@@ -120,10 +130,7 @@ export fn mb_free(h: ?*ModbusHandle) void {
     const handle = h orelse return;
     handle.is_closing.store(true, .release);
 
-    if (handle.tcp_listen_sock != -1) {
-        _ = c.closesocket(@bitCast(@as(isize, handle.tcp_listen_sock)));
-        handle.tcp_listen_sock = -1;
-    }
+    closeListenSocket(handle);
     // 提前 close 唤醒任何阻塞在 receive 上的后台从站线程
     c.modbus_close(handle.ctx);
 
@@ -450,7 +457,8 @@ export fn mb_slave_set_holding_regs_bulk(h: ?*ModbusHandle, start_index: c_int, 
     handle.mutex.lock();
     defer handle.mutex.unlock();
     const map = handle.mapping orelse return -1;
-    if (start_index + count > map.*.nb_registers) return -1;
+    // 用减法比较，避免 start_index + count 在 c_int 上溢出绕过越界检查
+    if (start_index >= map.*.nb_registers or count > map.*.nb_registers - start_index) return -1;
     const u_start: usize = @intCast(start_index);
     const u_count: usize = @intCast(count);
     @memcpy(map.*.tab_registers[u_start .. u_start + u_count], src[0..u_count]);
@@ -463,7 +471,7 @@ export fn mb_slave_get_holding_regs_bulk(h: ?*ModbusHandle, start_index: c_int, 
     handle.mutex.lock();
     defer handle.mutex.unlock();
     const map = handle.mapping orelse return -1;
-    if (start_index + count > map.*.nb_registers) return -1;
+    if (start_index >= map.*.nb_registers or count > map.*.nb_registers - start_index) return -1;
     const u_start: usize = @intCast(start_index);
     const u_count: usize = @intCast(count);
     @memcpy(dest[0..u_count], map.*.tab_registers[u_start .. u_start + u_count]);
@@ -476,7 +484,7 @@ export fn mb_slave_set_input_regs_bulk(h: ?*ModbusHandle, start_index: c_int, co
     handle.mutex.lock();
     defer handle.mutex.unlock();
     const map = handle.mapping orelse return -1;
-    if (start_index + count > map.*.nb_input_registers) return -1;
+    if (start_index >= map.*.nb_input_registers or count > map.*.nb_input_registers - start_index) return -1;
     const u_start: usize = @intCast(start_index);
     const u_count: usize = @intCast(count);
     @memcpy(map.*.tab_input_registers[u_start .. u_start + u_count], src[0..u_count]);
@@ -489,7 +497,7 @@ export fn mb_slave_get_input_regs_bulk(h: ?*ModbusHandle, start_index: c_int, co
     handle.mutex.lock();
     defer handle.mutex.unlock();
     const map = handle.mapping orelse return -1;
-    if (start_index + count > map.*.nb_input_registers) return -1;
+    if (start_index >= map.*.nb_input_registers or count > map.*.nb_input_registers - start_index) return -1;
     const u_start: usize = @intCast(start_index);
     const u_count: usize = @intCast(count);
     @memcpy(dest[0..u_count], map.*.tab_input_registers[u_start .. u_start + u_count]);

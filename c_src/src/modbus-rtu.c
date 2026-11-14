@@ -1210,7 +1210,8 @@ static int _modbus_rtu_flush(modbus_t *ctx)
 #if defined(_WIN32)
     modbus_rtu_t *ctx_rtu = ctx->backend_data;
     ctx_rtu->w_ser.n_bytes = 0;
-    return (PurgeComm(ctx_rtu->w_ser.fd, PURGE_RXCLEAR) == FALSE);
+    /* PurgeComm returns non-zero on success; modbus_flush expects 0 or -1 */
+    return PurgeComm(ctx_rtu->w_ser.fd, PURGE_RXCLEAR) ? 0 : -1;
 #else
     return tcflush(ctx->s, TCIOFLUSH);
 #endif

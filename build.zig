@@ -30,6 +30,9 @@ pub fn build(b: *std.Build) void {
         translate_c.addIncludePath(b.path("c_src/src"));
         translate_c.defineCMacro("HAVE_CONFIG_H", "1");
         translate_c.defineCMacro("_WIN32", "1");
+        // 与 C 源码保持同一套 Windows 兼容定义，避免两边解析出不同的声明
+        translate_c.defineCMacro("OS_WIN32", "1");
+        translate_c.defineCMacro("_WIN32_WINNT", "0x0601");
 
         // 2. 创建该架构的 Zig 模块
         const mod = b.createModule(.{
@@ -51,6 +54,12 @@ pub fn build(b: *std.Build) void {
             .flags = &.{
                 "-DHAVE_CONFIG_H",
                 "-D_WIN32",
+                // modbus-tcp.c 用 OS_WIN32 隔离 Winsock 专用分支（IP_TOS、ioctlsocket、
+                // WSAEWOULDBLOCK 等），显式定义后不再依赖文件内 #if defined(_WIN32)
+                "-DOS_WIN32=1",
+                // 最低目标 Windows 7：保证 getaddrinfo/freeaddrinfo/inet_pton 等
+                // ws2tcpip 声明可用
+                "-D_WIN32_WINNT=0x0601",
                 "-D_CRT_SECURE_NO_WARNINGS",
             },
         });
