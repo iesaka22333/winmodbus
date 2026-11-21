@@ -136,7 +136,9 @@ fn checkDll(io: std.Io, gpa: std.mem.Allocator, path: []const u8, arch: []const 
 }
 
 pub fn main(init: std.process.Init) !void {
-    var args = init.minimal.args.iterate();
+    // Windows 下命令行是 UTF-16，必须用带分配器的迭代器完成转码
+    var args = try init.minimal.args.iterateAllocator(init.gpa);
+    defer args.deinit();
     _ = args.next();
 
     var checked: usize = 0;

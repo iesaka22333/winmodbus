@@ -15,6 +15,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Zig 0.17 用这两个变量定位缓存目录。统一指向 workspace 下的 .zig-cache，
+# 既便于 actions/cache 精确打包，也避免缓存写到 runner 家目录后无法回收。
+# （setup-zig 默认也把二者设为 $GITHUB_WORKSPACE/.zig-cache，这里显式声明以固定路径。）
+env:
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
+  ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
+
 jobs:
   build:
     name: Build DLLs and verify
@@ -27,13 +34,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 把 runner 的工作目录排除出 Defender 实时扫描，减少编译期磁盘 I/O。
+      # 托管 runner 以管理员身份运行；若 Defender 被策略禁用则忽略失败。
+      - name: Exclude workspace from Windows Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        continue-on-error: true
+        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}", "${{ runner.temp }}" -ErrorAction SilentlyContinue
+
       # 项目使用 Zig 0.17 系列（见 .zigversion）。0.17 起 `-Doptimize=`
       # 已被 `--release[=fast|safe|small]` 取代，故这里用 --release=fast，
       # 与 build.zig 中的 preferred_optimize_mode = .ReleaseFast 保持一致。
+      #
+      # use-cache: false —— setup-zig 自带的缓存 key 只含 job 名与 Zig 版本，
+      # 首次保存后不再随源码更新（actions/cache 不允许覆盖同名 key），
+      # 因此改由下方 actions/cache 按内容哈希管理缓存。
       - name: Setup Zig 0.17.0
         uses: mlugg/setup-zig@v2
         with:
           version: '0.17.0'
+          use-cache: false
+
+      # 缓存 compiler-rt、libmodbus 目标文件等编译中间产物。
+      # key 随 build.zig / build.zig.zon / C 源码变化；源码未变时直接命中，
+      # 变化时用 restore-keys 回退到最近的同类缓存，借助 Zig 的内容寻址缓存复用未变部分。
+      - name: Restore Zig compilation cache
+        uses: actions/cache@v4
+        with:
+          path: .zig-cache
+          key: ${{ runner.os }}-zig-0.17.0-${{ hashFiles('build.zig', 'build.zig.zon', 'c_src/src/**') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-0.17.0-
 
       - name: Build x64 and x86 DLLs
         run: zig build --release=fast
