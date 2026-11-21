@@ -20,7 +20,4 @@ zig-cache/
 *.dll.a
 
 # zig-out：先整体忽略，再逐级放行 bin 目录下的 DLL
-/zig-out/*
-!/zig-out/bin/
-/zig-out/bin/*
-!/zig-out/bin/*.dll
+zig-out/
