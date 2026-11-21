@@ -31,6 +31,8 @@
 zig build
 ```
 
+发布构建请加 `--release=fast`：Zig 0.17 已用 `--release[=fast|safe|small]` 取代旧版的 `-Doptimize=ReleaseFast`，`build.zig` 中声明的首选优化模式即 `ReleaseFast`；不带参数时为 Debug 构建。
+
 | 产物 | 适用目标 |
 | :-- | :-- |
 | `zig-out/bin/libmodbus-x86.dll` | 32 位进程（32 位 Delphi / C++ Builder 的默认目标） |
@@ -45,10 +47,11 @@ C 源码以 Windows 7 为最低目标（`_WIN32_WINNT=0x0601`）编译，并显�
 
 ### 1.4 实机测试
 
-除构建 DLL 外，仓库还自带一个零第三方依赖的实机测试宿主 `tests/e2e_test.zig`，可在只有 Zig 环境的机器上直接验证交付产物：
+除构建 DLL 外，仓库还自带一个零第三方依赖的实机测试宿主 `tests/e2e_test.zig`，可在只有 Zig 环境的 Windows 机器上直接验证交付产物：
 
 ```sh
-zig build e2e
+zig build e2e                    # 默认使用 COM1
+zig build e2e -Dcom-port=COM3    # 指定实际接线串口
 ```
 
 该步骤会编译并运行 `e2e_test`，其内容为：
@@ -59,6 +62,30 @@ zig build e2e
 4. 验证 32 位 DLL 无法在 64 位进程中加载（架构隔离）。
 
 全部检查通过时进程返回 0，任一失败返回 1，可直接用于 CI 或交付前自检。当前共 94 项检查，全部通过。
+
+`e2e` 依赖本机真实串口（默认 COM1），不适合没有硬件的 CI 环境。CI 使用不依赖硬件的产物自检：
+
+```sh
+zig build test
+```
+
+该步骤不加载 DLL、不访问串口或网络，只解析 PE 头校验两个产物的架构（x64/x86）与本文档承诺的 66 个导出函数。
+
+本地可直接用脚本复现上面的流程：
+
+```sh
+./scripts/ci-linux.sh                    # Linux / macOS：构建 + 无硬件自检（与 CI 一致）
+```
+
+```powershell
+.\scripts\test-windows.ps1               # Windows：构建 + 自检 + 实机 e2e（默认 COM1）
+.\scripts\test-windows.ps1 -ComPort COM3 # 指定串口
+.\scripts\test-windows.ps1 -SkipE2E      # 只做构建与无硬件自检
+```
+
+### 1.5 持续集成与自动发版
+
+`.github/workflows/release.yml` 在推送 `main`、向 `main` 提交 PR 或推送 `v*` 标签时，于 `windows-latest` 上安装 Zig `0.17.0`，执行 `zig build --release=fast` 与 `zig build test --release=fast`，并把 `zig-out/bin/*.dll` 作为构建产物上传。推送 `v*` 标签时会自动创建 GitHub Release（自动生成变更日志），并附带 `libmodbus-x64.dll` 与 `libmodbus-x86.dll`。
 
 ## 2. 通用约定
 

@@ -1,0 +1,62 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+# softprops/action-gh-release 需要写权限才能创建 Release
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build DLLs and verify
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 项目使用 Zig 0.17 系列（见 .zigversion）。0.17 起 `-Doptimize=`
+      # 已被 `--release[=fast|safe|small]` 取代，故这里用 --release=fast，
+      # 与 build.zig 中的 preferred_optimize_mode = .ReleaseFast 保持一致。
+      - name: Setup Zig 0.17.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.17.0'
+
+      - name: Build x64 and x86 DLLs
+        run: zig build --release=fast
+
+      # 硬件无关检查：解析 PE 头校验架构与 66 个导出函数。
+      # 不运行 `zig build e2e`，因为它需要真实串口（默认 COM1）设备。
+      - name: Verify DLL architecture and exports
+        run: zig build test --release=fast
+
+      - name: Upload DLL artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmodbus-dlls
+          path: zig-out/bin/*.dll
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            zig-out/bin/libmodbus-x64.dll
+            zig-out/bin/libmodbus-x86.dll

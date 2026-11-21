@@ -6,11 +6,12 @@
 //   2. 校验 DLL 的全部导出符号；
 //   3. 在本机用「TCP 从站 <-> TCP 主站」回环，跑通 01/02/03/04/05/06/0F/10/11/16/17
 //      全部功能码、异常应答、参数越界、浮点/整型转换、多线程并发、断线自动重连；
-//   4. 对本机真实串口（默认 COM1）做 RTU 打开、超时、参数校验等实机探测。
+//   4. 对本机真实串口（默认 COM1，可用命令行参数或 `zig build e2e -Dcom-port=COMx` 指定）
+//      做 RTU 打开、超时、参数校验等实机探测。
 //
 // 编译运行：
-//   zig build-exe -OReleaseSafe --name e2e_test tests/e2e_test.zig -femit-bin=zig-out/bin/e2e_test.exe
-//   zig-out\bin\e2e_test.exe [DLL路径] [串口名]
+//   zig build e2e [-Dcom-port=COM3]
+//   zig-out\bin\e2e_test.exe [串口名]
 // ============================================================================
 const std = @import("std");
 
@@ -807,8 +808,12 @@ fn archSuite() void {
 }
 
 // ---------------------------------------------------------------------------
-pub fn main() !void {
-    const com: [:0]const u8 = "COM1";
+pub fn main(init: std.process.Init) !void {
+    // 第一个命令行参数为串口名（默认 COM1），便于换用 COM3 等实际接线端口
+    var args = try init.minimal.args.iterateAllocator(init.gpa);
+    defer args.deinit();
+    _ = args.next();
+    const com: [:0]const u8 = args.next() orelse "COM1";
 
     std.debug.print("winmodbus real-device test harness\n", .{});
     info("zig {s}, builtin arch={s}, os={s}", .{ @import("builtin").zig_version_string, @tagName(@import("builtin").cpu.arch), @tagName(@import("builtin").os.tag) });

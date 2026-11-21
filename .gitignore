@@ -5,8 +5,8 @@ zig-cache/
 # 编辑器
 .vscode/
 
-# 编译中间产物与各类二进制文件（仅 zig-out/bin 下的 .dll 交付物入库，
-# 其余如 .exe/.lib/.pdb/.obj 等一律不入库）
+# 编译中间产物与各类二进制文件（zig-out 整体不入库，DLL 交付物通过
+# CI 构建产物与 GitHub Release 附件分发）
 *.o
 *.obj
 *.lib
@@ -19,5 +19,5 @@ zig-cache/
 *.dylib
 *.dll.a
 
-# zig-out：先整体忽略，再逐级放行 bin 目录下的 DLL
-zig-out/
+# zig-out：整个构建输出目录不入库（仅仓库根目录下的 zig-out）
+/zig-out/
